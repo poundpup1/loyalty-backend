@@ -36,6 +36,34 @@ app.post("/setup", async (req, res) => {
   }
 });
 
+app.use(express.json());
+
+app.post("/customers", async (req, res) => {
+  const { name, phone } = req.body;
+  try {
+    const result = await pool.query(
+      "INSERT INTO customers (name, phone) VALUES ($1, $2) RETURNING *",
+      [name, phone || null]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.get("/customers/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM customers WHERE id = $1",
+      [Number(req.params.id)]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log('Server running on port ${port}');
