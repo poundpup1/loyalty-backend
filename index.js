@@ -24,6 +24,78 @@ app.get("/health", (req, res) => {
 
 app.use(express.json());
 
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+
+app.post("/auth/register", async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ ok: false, error: "email and password required" });
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const result = await pool.query(
+      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at",
+      [email.toLowerCase(), passwordHash]
+    );
+
+    res.json({ ok: true, user: result.rows[0] });
+  } catch (err) {
+    // likely duplicate email
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.post("/auth/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ ok: false, error: "email and password required" });
+
+  try {
+    const result = await pool.query("SELECT id, email, password_hash FROM users WHERE email = $1", [email.toLowerCase()]);
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ ok: false, error: "invalid credentials" });
+
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) return res.status(401).json({ ok: false, error: "invalid credentials" });
+
+    const token = jwt.sign(
+      { sub: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+app.get("/me", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+
+  const result = await pool.query(
+    "SELECT id, email, created_at FROM users WHERE id = $1",
+    [userId]
+  );
+
+  if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "user not found" });
+  res.json({ ok: true, user: result.rows[0] });
+});
+
+    function requireAuth(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ ok: false, error: "missing token" });
+
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = payload; // { sub, email, iat, exp }
+    next();
+  } catch {
+    return res.status(401).json({ ok: false, error: "invalid token" });
+  }
+}
+
+    res.json({ ok: true, token });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 app.post("/customers", async (req, res) => {
   const { name, phone } = req.body;
   try {
