@@ -192,9 +192,14 @@ app.get("/customers/:id/points", requireAuth, async (req, res) => {
 app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
   const customerId = Number(req.params.id);
-  const { points, reason } = req.body || {};
 
-  const pointsToRedeem = Number(points);
+  const pointsToRedeem = Number(req.body?.points);
+  const reason = req.body?.reason ? String(req.body.reason) : "redeem";
+
+  const idemKey =
+    (req.get("Idempotency-Key") ? String(req.get("Idempotency-Key")) : null) ||
+    (req.body?.idempotency_key ? String(req.body.idempotency_key) : null);
+
   if (!pointsToRedeem || pointsToRedeem <= 0) {
     return res.status(400).json({ ok: false, error: "points must be a positive number" });
   }
@@ -203,12 +208,10 @@ app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Lock redeems/earns for this (userId, customerId) for the duration of this transaction.
-    // This prevents concurrent redeems from racing.
-    // Two-int key format is supported by pg_advisory_xact_lock.
+    // Lock per (user, customer) to prevent redeem/earn races
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
 
-    // verify customer ownership inside the transaction
+    // Verify customer ownership
     const c = await client.query(
       "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
       [customerId, userId]
@@ -218,10 +221,35 @@ app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Customer not found" });
     }
 
-    // re-check balance AFTER acquiring lock (critical)
+    // Idempotency replay check (if key provided)
+    if (idemKey) {
+      const existing = await client.query(
+        "SELECT * FROM loyalty_ledger WHERE user_id=$1 AND customer_id=$2 AND idempotency_key=$3 LIMIT 1",
+        [userId, customerId, idemKey]
+      );
+
+      if (existing.rows.length > 0) {
+        // Compute current balance (includes that redemption)
+        const sum = await client.query(
+          "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND customer_id=$2",
+          [userId, customerId]
+        );
+
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          idempotent_replay: true,
+          redeemed: Math.abs(Number(existing.rows[0].points_delta)),
+          balance: Number(sum.rows[0].points),
+          ledger_entry: existing.rows[0],
+        });
+      }
+    }
+
+    // Current balance (after lock)
     const sum = await client.query(
-      "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE customer_id = $1 AND user_id = $2",
-      [customerId, userId]
+      "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND customer_id=$2",
+      [userId, customerId]
     );
     const balance = Number(sum.rows[0].points);
 
@@ -230,27 +258,57 @@ app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: `Insufficient points. Balance=${balance}` });
     }
 
-    // insert redemption (negative delta)
+    // Insert redemption (negative delta) with idempotency key
     const entry = await client.query(
-      "INSERT INTO loyalty_ledger (user_id, customer_id, points_delta, reason) VALUES ($1, $2, $3, $4) RETURNING *",
-      [userId, customerId, -pointsToRedeem, reason || "redeem"]
+      `INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason, idempotency_key)
+       VALUES ($1, $2, NULL, $3, $4, $5)
+       RETURNING *`,
+      [userId, customerId, -pointsToRedeem, reason, idemKey || null]
     );
 
     await client.query("COMMIT");
 
     res.json({
       ok: true,
+      idempotent_replay: false,
       redeemed: pointsToRedeem,
       balance: balance - pointsToRedeem,
       ledger_entry: entry.rows[0],
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
+
+    // If unique constraint fires (retry/race), fetch existing and return replay
+    if (idemKey && String(err.message || err).toLowerCase().includes("duplicate")) {
+      try {
+        const existing = await pool.query(
+          "SELECT * FROM loyalty_ledger WHERE user_id=$1 AND customer_id=$2 AND idempotency_key=$3 LIMIT 1",
+          [userId, customerId, idemKey]
+        );
+
+        if (existing.rows.length > 0) {
+          const sum = await pool.query(
+            "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND customer_id=$2",
+            [userId, customerId]
+          );
+
+          return res.json({
+            ok: true,
+            idempotent_replay: true,
+            redeemed: Math.abs(Number(existing.rows[0].points_delta)),
+            balance: Number(sum.rows[0].points),
+            ledger_entry: existing.rows[0],
+          });
+        }
+      } catch {}
+    }
+
     res.status(500).json({ ok: false, error: String(err.message || err) });
   } finally {
     client.release();
   }
 });
+
 
 app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
