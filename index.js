@@ -167,38 +167,57 @@ app.post("/orders", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
   const { customer_id, subtotal_cents } = req.body || {};
 
-  if (!customer_id || !subtotal_cents) {
-    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents required" });
+  const customerId = Number(customer_id);
+  const subtotalCents = Number(subtotal_cents);
+
+  if (!customerId || !subtotalCents || subtotalCents <= 0) {
+    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents (> 0) required" });
   }
 
+  const client = await pool.connect();
   try {
-    // verify the customer belongs to this user
-    const c = await pool.query(
+    await client.query("BEGIN");
+
+    // Lock this (userId, customerId) for the duration of the transaction.
+    // Prevents earn/redeem races on the same customer.
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
+
+    // verify the customer belongs to this user (inside txn)
+    const c = await client.query(
       "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
-      [Number(customer_id), userId]
+      [customerId, userId]
     );
-    if (c.rows.length === 0) return res.status(404).json({ ok: false, error: "Customer not found" });
+    if (c.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ ok: false, error: "Customer not found" });
+    }
 
     // create order
-    const order = await pool.query(
+    const order = await client.query(
       "INSERT INTO orders (user_id, customer_id, subtotal_cents) VALUES ($1, $2, $3) RETURNING *",
-      [userId, Number(customer_id), Number(subtotal_cents)]
+      [userId, customerId, subtotalCents]
     );
 
-    // points rule: 1 point per $1 spent (customize later)
-    const points = Math.floor(Number(subtotal_cents) / 100);
+    // points rule: 1 point per $1 spent
+    const points = Math.floor(subtotalCents / 100);
 
-    // ledger entry
-    await pool.query(
+    // write ledger entry (earned points)
+    await client.query(
       "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, Number(customer_id), order.rows[0].id, points, "earn_from_order"]
+      [userId, customerId, order.rows[0].id, points, "earn_from_order"]
     );
+
+    await client.query("COMMIT");
 
     res.json({ ok: true, order: order.rows[0], points_earned: points });
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
     res.status(500).json({ ok: false, error: String(err.message || err) });
+  } finally {
+    client.release();
   }
 });
+
 
 app.get("/customers/:id/points", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
