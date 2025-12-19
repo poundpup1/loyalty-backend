@@ -543,6 +543,99 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
   }
 });
 
+app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
+  const {
+    user_id,
+    pos_order_id,
+    pos_customer_id,
+    customer_name,
+    customer_phone,
+    subtotal_cents
+  } = req.body || {};
+
+  const userId = Number(user_id);
+  const subtotalCents = Number(subtotal_cents);
+
+  if (!userId || !pos_order_id || !pos_customer_id || !subtotalCents) {
+    return res.status(400).json({
+      ok: false,
+      error: "user_id, pos_order_id, pos_customer_id, subtotal_cents required"
+    });
+  }
+
+  const idemKey = String(pos_order_id);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Find or create customer by (user_id, pos_customer_id)
+    let cust = await client.query(
+      "SELECT * FROM customers WHERE user_id=$1 AND pos_customer_id=$2 LIMIT 1",
+      [userId, String(pos_customer_id)]
+    );
+
+    if (cust.rows.length === 0) {
+      const created = await client.query(
+        `INSERT INTO customers (user_id, pos_customer_id, name, phone)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [userId, String(pos_customer_id), String(customer_name || "POS Customer"), customer_phone || null]
+      );
+      cust = created;
+    }
+
+    const customerId = cust.rows[0].id;
+
+    // Lock per customer for earn/redeem safety
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
+
+    // Idempotency: if this pos_order_id already created, return ok (replay)
+    const existing = await client.query(
+      "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
+      [userId, idemKey]
+    );
+    if (existing.rows.length > 0) {
+      await client.query("COMMIT");
+      return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
+    }
+
+    // Create order with idempotency_key = pos_order_id
+    const orderResult = await client.query(
+      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
+      [userId, customerId, subtotalCents, idemKey]
+    );
+
+    const points = Math.floor(subtotalCents / 100);
+
+    await client.query(
+      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
+      [userId, customerId, orderResult.rows[0].id, points, "earn_from_webhook_order"]
+    );
+
+    await client.query("COMMIT");
+    res.json({ ok: true, replay: false, order_id: orderResult.rows[0].id, points_earned: points });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+
+    // If unique constraint hit due to race, treat as replay
+    if (String(err.message || err).toLowerCase().includes("duplicate")) {
+      try {
+        const existing = await pool.query(
+          "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
+          [Number(req.body?.user_id), String(req.body?.pos_order_id)]
+        );
+        if (existing.rows.length > 0) {
+          return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
+        }
+      } catch {}
+    }
+
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  } finally {
+    client.release();
+  }
+});
 
 
 
