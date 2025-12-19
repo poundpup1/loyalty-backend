@@ -517,6 +517,12 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/debug/idem", requireAuth, (req, res) => {
+  res.json({
+    ok: true,
+    header: req.headers["idempotency-key"] || null,
+  });
+});
 
 
 
