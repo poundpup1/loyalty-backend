@@ -475,6 +475,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
         o.customer_id,
         o.subtotal_cents,
         o.created_at,
+        o.idempotency_key,
         c.name AS customer_name,
         c.phone AS customer_phone,
         COALESCE(SUM(l.points_delta), 0) AS points_delta
@@ -486,7 +487,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
         ON l.order_id = o.id
        AND l.user_id = o.user_id
       WHERE o.id = $1 AND o.user_id = $2
-      GROUP BY o.id, c.name, c.phone
+      GROUP BY o.id, o.idempotency_key, c.name, c.phone
       `,
       [orderId, userId]
     );
@@ -501,6 +502,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
       ok: true,
       order: {
         id: row.id,
+        idempotency_key: row.idempotency_key,
         customer_id: row.customer_id,
         subtotal_cents: row.subtotal_cents,
         created_at: row.created_at,
