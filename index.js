@@ -11,6 +11,17 @@ const pool = new Pool({
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
+function requireWebhookSecret(req, res, next) {
+  const provided = req.get("X-Webhook-Secret");
+  if (!process.env.WEBHOOK_SECRET) {
+    return res.status(500).json({ ok: false, error: "WEBHOOK_SECRET not configured" });
+  }
+  if (!provided || provided !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+  }
+  next();
+}
+
 
 app.get("/db-health", async (req, res) => {
   try {
@@ -533,6 +544,24 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
 });
 
 
+app.post("/setup-pos-customer", async (req, res) => {
+  try {
+    await pool.query(`
+      ALTER TABLE customers
+      ADD COLUMN IF NOT EXISTS pos_customer_id TEXT;
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_user_pos_customer_id
+      ON customers(user_id, pos_customer_id)
+      WHERE pos_customer_id IS NOT NULL;
+    `);
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 const port = process.env.PORT || 3000;
