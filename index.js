@@ -163,6 +163,39 @@ app.get("/customers/:id", async (req, res) => {
   }
 });
 
+app.post("/setup-loyalty", async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        customer_id INTEGER NOT NULL,
+        subtotal_cents INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS loyalty_ledger (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        customer_id INTEGER NOT NULL,
+        order_id INTEGER,
+        points_delta INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ledger_customer_id ON loyalty_ledger(customer_id);`);
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 
