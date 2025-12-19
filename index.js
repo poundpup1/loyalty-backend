@@ -433,6 +433,12 @@ app.post("/orders", requireAuth, async (req, res) => {
       idempotent_replay: false,
       order: orderResult.rows[0],
       points_earned: points,
+      debug_idem: {
+  header: req.get("Idempotency-Key") || null,
+  body: req.body?.idempotency_key || null,
+  computed: idemKey || null,
+}
+
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
