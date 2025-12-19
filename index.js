@@ -544,24 +544,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
 });
 
 
-app.post("/setup-pos-customer", async (req, res) => {
-  try {
-    await pool.query(`
-      ALTER TABLE customers
-      ADD COLUMN IF NOT EXISTS pos_customer_id TEXT;
-    `);
 
-    await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ux_customers_user_pos_customer_id
-      ON customers(user_id, pos_customer_id)
-      WHERE pos_customer_id IS NOT NULL;
-    `);
-
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
 
 
 const port = process.env.PORT || 3000;
