@@ -474,25 +474,6 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/setup-redeem-idempotency", async (req, res) => {
-  try {
-    await pool.query(`
-      ALTER TABLE loyalty_ledger
-      ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
-    `);
-
-    // Idempotency keys must be unique per user+customer when provided
-    await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS ux_ledger_user_customer_idemkey
-      ON loyalty_ledger(user_id, customer_id, idempotency_key)
-      WHERE idempotency_key IS NOT NULL;
-    `);
-
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
 
 
 
