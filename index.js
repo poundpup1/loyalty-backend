@@ -545,7 +545,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
 
 app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
   const {
-    user_id,
+    
     pos_order_id,
     pos_customer_id,
     customer_name,
@@ -553,7 +553,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
     subtotal_cents
   } = req.body || {};
 
-  const userId = Number(user_id);
+  const userId = Number(process.env.WEBHOOK_USER_ID);
   const subtotalCents = Number(subtotal_cents);
 
   if (!userId || !pos_order_id || !pos_customer_id || !subtotalCents) {
