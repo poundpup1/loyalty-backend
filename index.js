@@ -399,6 +399,12 @@ app.post("/orders", requireAuth, async (req, res) => {
           idempotent_replay: true,
           order: existing.rows[0],
           points_earned: Number(earned.rows[0].points),
+          debug_idem: {
+  header: req.get("Idempotency-Key") || null,
+  body: req.body?.idempotency_key || null,
+  computed: idemKey || null,
+}
+
         });
       }
     }
