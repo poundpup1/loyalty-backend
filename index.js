@@ -355,6 +355,50 @@ app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
 });
 
 
+app.get("/orders", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
+  const customerId = req.query.customer_id ? Number(req.query.customer_id) : null;
+
+  try {
+    const params = [userId];
+    let sql = `
+      SELECT id, customer_id, subtotal_cents, created_at
+      FROM orders
+      WHERE user_id = $1
+    `;
+
+    if (customerId) {
+      params.push(customerId);
+      sql += ` AND customer_id = $${params.length} `;
+    }
+
+    if (beforeId) {
+      params.push(beforeId);
+      sql += ` AND id < $${params.length} `;
+    }
+
+    params.push(limit);
+    sql += ` ORDER BY id DESC LIMIT $${params.length}; `;
+
+    const result = await pool.query(sql, params);
+
+    const next_before_id =
+      result.rows.length > 0 ? result.rows[result.rows.length - 1].id : null;
+
+    res.json({
+      ok: true,
+      orders: result.rows,
+      next_before_id,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
