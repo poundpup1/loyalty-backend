@@ -149,6 +149,17 @@ app.get("/customers/:id", async (req, res) => {
   }
 });
 
+app.post("/setup-customers-auth", async (req, res) => {
+  try {
+    await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS user_id INTEGER;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_customers_user_id ON customers(user_id);`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log('Server running on port ${port}');
