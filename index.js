@@ -357,36 +357,30 @@ app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
 
 app.post("/orders", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
-  const { customer_id, subtotal_cents, idempotency_key } = req.body || {};
 
-  const customerId = Number(customer_id);
-  const subtotalCents = Number(subtotal_cents);
-  const order = await client.query(
-  "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
-  [userId, customerId, subtotalCents, idemKey]
-);
+  const customerId = Number(req.body?.customer_id);
+  const subtotalCents = Number(req.body?.subtotal_cents);
 
-
-  // Prefer header, fallback to body
- const idemKey =
-  (req.get("Idempotency-Key") && String(req.get("Idempotency-Key"))) ||
-  (idempotency_key && String(idempotency_key)) ||
-  null;
-
-
+  // Read idempotency key from header OR body
+  const idemKey =
+    (req.get("Idempotency-Key") ? String(req.get("Idempotency-Key")) : null) ||
+    (req.body?.idempotency_key ? String(req.body.idempotency_key) : null);
 
   if (!customerId || !subtotalCents || subtotalCents <= 0) {
-    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents (> 0) required" });
+    return res.status(400).json({
+      ok: false,
+      error: "customer_id and subtotal_cents (> 0) required",
+    });
   }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Lock this (userId, customerId) for earn/redeem safety
+    // Earn/redeem safety lock per customer
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
 
-    // If idempotency key provided, return existing order if already created
+    // Idempotency replay check
     if (idemKey) {
       const existing = await client.query(
         "SELECT * FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
@@ -394,7 +388,6 @@ app.post("/orders", requireAuth, async (req, res) => {
       );
 
       if (existing.rows.length > 0) {
-        // also compute points earned for that order
         const earned = await client.query(
           "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND order_id=$2",
           [userId, existing.rows[0].id]
@@ -410,7 +403,7 @@ app.post("/orders", requireAuth, async (req, res) => {
       }
     }
 
-    // verify the customer belongs to this user
+    // Verify customer ownership
     const c = await client.query(
       "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
       [customerId, userId]
@@ -420,27 +413,31 @@ app.post("/orders", requireAuth, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Customer not found" });
     }
 
-    // create order (store idempotency_key if provided)
-    const order = await client.query(
+    // Create order (store idempotency key)
+    const orderResult = await client.query(
       "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
-      [userId, customerId, subtotalCents, idemKey]
+      [userId, customerId, subtotalCents, idemKey || null]
     );
 
-    // points rule: 1 point per $1 spent
     const points = Math.floor(subtotalCents / 100);
 
-    // ledger entry (earned points)
+    // Earn ledger entry
     await client.query(
       "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, customerId, order.rows[0].id, points, "earn_from_order"]
+      [userId, customerId, orderResult.rows[0].id, points, "earn_from_order"]
     );
 
     await client.query("COMMIT");
-    res.json({ ok: true, idempotent_replay: false, order: order.rows[0], points_earned: points });
+    res.json({
+      ok: true,
+      idempotent_replay: false,
+      order: orderResult.rows[0],
+      points_earned: points,
+    });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
 
-    // If we hit unique constraint due to a race, fetch and return the existing order
+    // If unique constraint triggers, return the existing order (race-safe)
     if (idemKey && String(err.message || err).toLowerCase().includes("duplicate")) {
       try {
         const existing = await pool.query(
@@ -467,6 +464,7 @@ app.post("/orders", requireAuth, async (req, res) => {
     client.release();
   }
 });
+
 
 
 
