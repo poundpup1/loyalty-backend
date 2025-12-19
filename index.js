@@ -115,6 +115,20 @@ app.post("/customers", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/customers", requireAuth, async (req, res) => {
+  try {
+    const userId = Number(req.user.sub);
+    const result = await pool.query(
+      "SELECT * FROM customers WHERE user_id = $1 ORDER BY id DESC LIMIT 50",
+      [userId]
+    );
+    res.json({ ok: true, customers: result.rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
 app.get("/customers/:id", requireAuth, async (req, res) => {
   try {
     const userId = Number(req.user.sub);
