@@ -25,21 +25,6 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/setup-users", async (req, res) => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
 
 
 app.post("/auth/register", async (req, res) => {
