@@ -305,6 +305,54 @@ app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const customerId = Number(req.params.id);
+
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
+
+  try {
+    // Verify customer ownership
+    const c = await pool.query(
+      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+    if (c.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "Customer not found" });
+    }
+
+    // Fetch ledger entries
+    const params = [userId, customerId];
+    let sql = `
+      SELECT id, customer_id, order_id, points_delta, reason, created_at
+      FROM loyalty_ledger
+      WHERE user_id = $1 AND customer_id = $2
+    `;
+
+    if (beforeId) {
+      params.push(beforeId);
+      sql += ` AND id < $3 `;
+    }
+
+    params.push(limit);
+    sql += ` ORDER BY id DESC LIMIT $${params.length}; `;
+
+    const result = await pool.query(sql, params);
+
+    const next_before_id =
+      result.rows.length > 0 ? result.rows[result.rows.length - 1].id : null;
+
+    res.json({
+      ok: true,
+      customer_id: customerId,
+      ledger: result.rows,
+      next_before_id,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 
