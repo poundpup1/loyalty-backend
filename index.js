@@ -223,6 +223,49 @@ app.get("/customers/:id/points", requireAuth, async (req, res) => {
   }
 });
 
+app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const customerId = Number(req.params.id);
+  const { points, reason } = req.body || {};
+
+  const pointsToRedeem = Number(points);
+  if (!pointsToRedeem || pointsToRedeem <= 0) {
+    return res.status(400).json({ ok: false, error: "points must be a positive number" });
+  }
+
+  try {
+    // verify customer ownership
+    const c = await pool.query(
+      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+    if (c.rows.length === 0) return res.status(404).json({ ok: false, error: "Customer not found" });
+
+    // current balance
+    const sum = await pool.query(
+      "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE customer_id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+    const balance = Number(sum.rows[0].points);
+
+    if (balance < pointsToRedeem) {
+      return res.status(400).json({ ok: false, error: `Insufficient points. Balance=${balance}` });
+    }
+
+    // create redemption (negative delta)
+    const entry = await pool.query(
+      "INSERT INTO loyalty_ledger (user_id, customer_id, points_delta, reason) VALUES ($1, $2, $3, $4) RETURNING *",
+      [userId, customerId, -pointsToRedeem, reason || "redeem"]
+    );
+
+    const newBalance = balance - pointsToRedeem;
+
+    res.json({ ok: true, redeemed: pointsToRedeem, balance: newBalance, ledger_entry: entry.rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 
 
 
