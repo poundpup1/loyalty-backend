@@ -200,6 +200,29 @@ app.post("/orders", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/customers/:id/points", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const customerId = Number(req.params.id);
+
+  try {
+    // verify ownership
+    const c = await pool.query(
+      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+    if (c.rows.length === 0) return res.status(404).json({ ok: false, error: "Customer not found" });
+
+    const sum = await pool.query(
+      "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE customer_id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+
+    res.json({ ok: true, customer_id: customerId, points: Number(sum.rows[0].points) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 
 
 
