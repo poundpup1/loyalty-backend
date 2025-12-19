@@ -361,11 +361,18 @@ app.post("/orders", requireAuth, async (req, res) => {
 
   const customerId = Number(customer_id);
   const subtotalCents = Number(subtotal_cents);
+  const order = await client.query(
+  "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
+  [userId, customerId, subtotalCents, idemKey]
+);
+
 
   // Prefer header, fallback to body
-  const idemKey =
-  req.get("Idempotency-Key") ||
-  (idempotency_key ? String(idempotency_key) : null);
+ const idemKey =
+  (req.get("Idempotency-Key") && String(req.get("Idempotency-Key"))) ||
+  (idempotency_key && String(idempotency_key)) ||
+  null;
+
 
 
   if (!customerId || !subtotalCents || subtotalCents <= 0) {
