@@ -8,6 +8,10 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
 });
 
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+
+
 app.get("/db-health", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW() as now");
@@ -21,12 +25,6 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-
-
-
-
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
 
 app.post("/auth/register", async (req, res) => {
   const { email, password } = req.body || {};
@@ -64,18 +62,12 @@ app.post("/auth/login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
-
-app.get("/me", requireAuth, async (req, res) => {
-  const userId = Number(req.user.sub);
-
-  const result = await pool.query(
-    "SELECT id, email, created_at FROM users WHERE id = $1",
-    [userId]
-  );
-
-  if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "user not found" });
-  res.json({ ok: true, user: result.rows[0] });
+ res.json({ ok: true, token });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
 });
+
 
     function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
@@ -91,11 +83,18 @@ app.get("/me", requireAuth, async (req, res) => {
   }
 }
 
-    res.json({ ok: true, token });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
+app.get("/me", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+
+  const result = await pool.query(
+    "SELECT id, email, created_at FROM users WHERE id = $1",
+    [userId]
+  );
+
+  if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "user not found" });
+  res.json({ ok: true, user: result.rows[0] });
 });
+
 
 app.post("/customers", async (req, res) => {
   const { name, phone } = req.body;
