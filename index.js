@@ -163,6 +163,42 @@ app.get("/customers/:id", async (req, res) => {
   }
 });
 
+app.post("/orders", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const { customer_id, subtotal_cents } = req.body || {};
+
+  if (!customer_id || !subtotal_cents) {
+    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents required" });
+  }
+
+  try {
+    // verify the customer belongs to this user
+    const c = await pool.query(
+      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
+      [Number(customer_id), userId]
+    );
+    if (c.rows.length === 0) return res.status(404).json({ ok: false, error: "Customer not found" });
+
+    // create order
+    const order = await pool.query(
+      "INSERT INTO orders (user_id, customer_id, subtotal_cents) VALUES ($1, $2, $3) RETURNING *",
+      [userId, Number(customer_id), Number(subtotal_cents)]
+    );
+
+    // points rule: 1 point per $1 spent (customize later)
+    const points = Math.floor(Number(subtotal_cents) / 100);
+
+    // ledger entry
+    await pool.query(
+      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
+      [userId, Number(customer_id), order.rows[0].id, points, "earn_from_order"]
+    );
+
+    res.json({ ok: true, order: order.rows[0], points_earned: points });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 
