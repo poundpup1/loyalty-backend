@@ -524,6 +524,24 @@ app.get("/debug/idem", requireAuth, (req, res) => {
   });
 });
 
+app.post("/setup-idempotency", async (req, res) => {
+  try {
+    await pool.query(`
+      ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_user_id_idempotency_key
+      ON orders(user_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    `);
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 const port = process.env.PORT || 3000;
