@@ -11,13 +11,47 @@ const pool = new Pool({
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
+const crypto = require("crypto");
+
+function safeEqual(a, b) {
+  const aa = Buffer.from(a || "");
+  const bb = Buffer.from(b || "");
+  if (aa.length !== bb.length) return false;
+  return crypto.timingSafeEqual(aa, bb);
+}
+
 function requireWebhookSecret(req, res, next) {
   const provided = req.get("X-Webhook-Secret");
-  if (!process.env.WEBHOOK_SECRET) {
-    return res.status(500).json({ ok: false, error: "WEBHOOK_SECRET not configured" });
-  }
-  if (!provided || provided !== process.env.WEBHOOK_SECRET) {
+  const expected = process.env.WEBHOOK_SECRET;
+
+  if (!expected) return res.status(500).json({ ok: false, error: "WEBHOOK_SECRET not configured" });
+  if (!provided || !safeEqual(provided, expected)) {
     return res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+  }
+  next();
+}
+
+
+const webhookHits = new Map();
+
+function rateLimitWebhook(req, res, next) {
+  const limit = Number(process.env.WEBHOOK_RATE_LIMIT_PER_MIN || 120);
+  const now = Date.now();
+  const windowMs = 60_000;
+
+  const key = req.ip || "unknown";
+  const entry = webhookHits.get(key) || { count: 0, start: now };
+
+  if (now - entry.start > windowMs) {
+    entry.count = 0;
+    entry.start = now;
+  }
+
+  entry.count += 1;
+  webhookHits.set(key, entry);
+
+  if (entry.count > limit) {
+    return res.status(429).json({ ok: false, error: "Rate limit exceeded" });
   }
   next();
 }
@@ -371,7 +405,7 @@ app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
 });
 
 
-app.post("/orders", requireAuth, async (req, res) => {
+app.post("/webhooks/orders", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
 
   const customerId = Number(req.body?.customer_id);
@@ -553,15 +587,34 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
     subtotal_cents
   } = req.body || {};
 
+const posOrderId = String(pos_order_id || "").trim();
+const posCustomerId = String(pos_customer_id || "").trim();
+
+if (posOrderId.length < 3 || posOrderId.length > 200) {
+  return res.status(400).json({ ok: false, error: "pos_order_id invalid" });
+}
+if (posCustomerId.length < 3 || posCustomerId.length > 200) {
+  return res.status(400).json({ ok: false, error: "pos_customer_id invalid" });
+}
+if (!Number.isInteger(subtotalCents) || subtotalCents <= 0 || subtotalCents > 10_000_000) {
+  return res.status(400).json({ ok: false, error: "subtotal_cents invalid" });
+}
+
+
   const userId = Number(process.env.WEBHOOK_USER_ID);
+if (!userId) {
+  return res.status(500).json({ ok: false, error: "WEBHOOK_USER_ID not configured" });
+}
+
   const subtotalCents = Number(subtotal_cents);
 
-  if (!userId || !pos_order_id || !pos_customer_id || !subtotalCents) {
-    return res.status(400).json({
-      ok: false,
-      error: "user_id, pos_order_id, pos_customer_id, subtotal_cents required"
-    });
-  }
+  if (!pos_order_id || !pos_customer_id || !subtotalCents) {
+  return res.status(400).json({
+    ok: false,
+    error: "pos_order_id, pos_customer_id, subtotal_cents required"
+  });
+}
+
 
   const idemKey = String(pos_order_id);
 
