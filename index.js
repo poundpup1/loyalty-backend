@@ -233,36 +233,56 @@ app.post("/customers/:id/redeem", requireAuth, async (req, res) => {
     return res.status(400).json({ ok: false, error: "points must be a positive number" });
   }
 
+  const client = await pool.connect();
   try {
-    // verify customer ownership
-    const c = await pool.query(
+    await client.query("BEGIN");
+
+    // Lock redeems/earns for this (userId, customerId) for the duration of this transaction.
+    // This prevents concurrent redeems from racing.
+    // Two-int key format is supported by pg_advisory_xact_lock.
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
+
+    // verify customer ownership inside the transaction
+    const c = await client.query(
       "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
       [customerId, userId]
     );
-    if (c.rows.length === 0) return res.status(404).json({ ok: false, error: "Customer not found" });
+    if (c.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ ok: false, error: "Customer not found" });
+    }
 
-    // current balance
-    const sum = await pool.query(
+    // re-check balance AFTER acquiring lock (critical)
+    const sum = await client.query(
       "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE customer_id = $1 AND user_id = $2",
       [customerId, userId]
     );
     const balance = Number(sum.rows[0].points);
 
     if (balance < pointsToRedeem) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ ok: false, error: `Insufficient points. Balance=${balance}` });
     }
 
-    // create redemption (negative delta)
-    const entry = await pool.query(
+    // insert redemption (negative delta)
+    const entry = await client.query(
       "INSERT INTO loyalty_ledger (user_id, customer_id, points_delta, reason) VALUES ($1, $2, $3, $4) RETURNING *",
       [userId, customerId, -pointsToRedeem, reason || "redeem"]
     );
 
-    const newBalance = balance - pointsToRedeem;
+    await client.query("COMMIT");
 
-    res.json({ ok: true, redeemed: pointsToRedeem, balance: newBalance, ledger_entry: entry.rows[0] });
+    res.json({
+      ok: true,
+      redeemed: pointsToRedeem,
+      balance: balance - pointsToRedeem,
+      ledger_entry: entry.rows[0],
+    });
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
     res.status(500).json({ ok: false, error: String(err.message || err) });
+  } finally {
+    client.release();
   }
 });
 
