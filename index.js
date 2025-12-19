@@ -399,6 +399,61 @@ app.get("/orders", requireAuth, async (req, res) => {
 });
 
 
+app.get("/orders/:id", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const orderId = Number(req.params.id);
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        o.id,
+        o.customer_id,
+        o.subtotal_cents,
+        o.created_at,
+        c.name AS customer_name,
+        c.phone AS customer_phone,
+        COALESCE(SUM(l.points_delta), 0) AS points_delta
+      FROM orders o
+      JOIN customers c
+        ON c.id = o.customer_id
+       AND c.user_id = o.user_id
+      LEFT JOIN loyalty_ledger l
+        ON l.order_id = o.id
+       AND l.user_id = o.user_id
+      WHERE o.id = $1 AND o.user_id = $2
+      GROUP BY o.id, c.name, c.phone
+      `,
+      [orderId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "Order not found" });
+    }
+
+    const row = result.rows[0];
+
+    res.json({
+      ok: true,
+      order: {
+        id: row.id,
+        customer_id: row.customer_id,
+        subtotal_cents: row.subtotal_cents,
+        created_at: row.created_at,
+        points_delta: Number(row.points_delta), // earned points for this order (usually positive)
+      },
+      customer: {
+        id: row.customer_id,
+        name: row.customer_name,
+        phone: row.customer_phone,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
