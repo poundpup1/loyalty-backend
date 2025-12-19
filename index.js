@@ -163,60 +163,7 @@ app.get("/customers/:id", async (req, res) => {
   }
 });
 
-app.post("/orders", requireAuth, async (req, res) => {
-  const userId = Number(req.user.sub);
-  const { customer_id, subtotal_cents } = req.body || {};
 
-  const customerId = Number(customer_id);
-  const subtotalCents = Number(subtotal_cents);
-
-  if (!customerId || !subtotalCents || subtotalCents <= 0) {
-    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents (> 0) required" });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    // Lock this (userId, customerId) for the duration of the transaction.
-    // Prevents earn/redeem races on the same customer.
-    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
-
-    // verify the customer belongs to this user (inside txn)
-    const c = await client.query(
-      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
-      [customerId, userId]
-    );
-    if (c.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Customer not found" });
-    }
-
-    // create order
-    const order = await client.query(
-      "INSERT INTO orders (user_id, customer_id, subtotal_cents) VALUES ($1, $2, $3) RETURNING *",
-      [userId, customerId, subtotalCents]
-    );
-
-    // points rule: 1 point per $1 spent
-    const points = Math.floor(subtotalCents / 100);
-
-    // write ledger entry (earned points)
-    await client.query(
-      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, customerId, order.rows[0].id, points, "earn_from_order"]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({ ok: true, order: order.rows[0], points_earned: points });
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch {}
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  } finally {
-    client.release();
-  }
-});
 
 
 app.get("/customers/:id/points", requireAuth, async (req, res) => {
