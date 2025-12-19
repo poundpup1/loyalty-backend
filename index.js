@@ -97,18 +97,44 @@ app.get("/me", requireAuth, async (req, res) => {
 });
 
 
-app.post("/customers", async (req, res) => {
+app.post("/customers", requireAuth, async (req, res) => {
   const { name, phone } = req.body;
+  if (!name) return res.status(400).json({ ok: false, error: "name required" });
+
   try {
+    const userId = Number(req.user.sub);
+
     const result = await pool.query(
-      "INSERT INTO customers (name, phone) VALUES ($1, $2) RETURNING *",
-      [name, phone || null]
+      "INSERT INTO customers (name, phone, user_id) VALUES ($1, $2, $3) RETURNING *",
+      [name, phone || null, userId]
     );
-    res.json(result.rows[0]);
+
+    res.json({ ok: true, customer: result.rows[0] });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
+
+app.get("/customers/:id", requireAuth, async (req, res) => {
+  try {
+    const userId = Number(req.user.sub);
+    const customerId = Number(req.params.id);
+
+    const result = await pool.query(
+      "SELECT * FROM customers WHERE id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    res.json({ ok: true, customer: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 
 app.get("/customers/:id", async (req, res) => {
   try {
