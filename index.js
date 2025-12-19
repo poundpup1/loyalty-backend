@@ -364,9 +364,9 @@ app.post("/orders", requireAuth, async (req, res) => {
 
   // Prefer header, fallback to body
   const idemKey =
-    (req.headers["idempotency-key"] && String(req.headers["idempotency-key"])) ||
-    (idempotency_key && String(idempotency_key)) ||
-    null;
+  req.get("Idempotency-Key") ||
+  (idempotency_key ? String(idempotency_key) : null);
+
 
   if (!customerId || !subtotalCents || subtotalCents <= 0) {
     return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents (> 0) required" });
