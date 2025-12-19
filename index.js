@@ -1,5 +1,6 @@
 const express = require("express");
 const app = express();
+app.use(express.json());
 
 const { Pool } = require("pg");
 const pool = new Pool({
@@ -22,7 +23,7 @@ app.get("/health", (req, res) => {
 
 
 
-app.use(express.json());
+
 
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
