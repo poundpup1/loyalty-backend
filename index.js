@@ -355,48 +355,112 @@ app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
 });
 
 
-app.get("/orders", requireAuth, async (req, res) => {
+app.post("/orders", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
+  const { customer_id, subtotal_cents, idempotency_key } = req.body || {};
 
-  const limit = Math.min(Number(req.query.limit) || 50, 200);
-  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
-  const customerId = req.query.customer_id ? Number(req.query.customer_id) : null;
+  const customerId = Number(customer_id);
+  const subtotalCents = Number(subtotal_cents);
 
+  // Prefer header, fallback to body
+  const idemKey =
+    (req.headers["idempotency-key"] && String(req.headers["idempotency-key"])) ||
+    (idempotency_key && String(idempotency_key)) ||
+    null;
+
+  if (!customerId || !subtotalCents || subtotalCents <= 0) {
+    return res.status(400).json({ ok: false, error: "customer_id and subtotal_cents (> 0) required" });
+  }
+
+  const client = await pool.connect();
   try {
-    const params = [userId];
-    let sql = `
-      SELECT id, customer_id, subtotal_cents, created_at
-      FROM orders
-      WHERE user_id = $1
-    `;
+    await client.query("BEGIN");
 
-    if (customerId) {
-      params.push(customerId);
-      sql += ` AND customer_id = $${params.length} `;
+    // Lock this (userId, customerId) for earn/redeem safety
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
+
+    // If idempotency key provided, return existing order if already created
+    if (idemKey) {
+      const existing = await client.query(
+        "SELECT * FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
+        [userId, idemKey]
+      );
+
+      if (existing.rows.length > 0) {
+        // also compute points earned for that order
+        const earned = await client.query(
+          "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND order_id=$2",
+          [userId, existing.rows[0].id]
+        );
+
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          idempotent_replay: true,
+          order: existing.rows[0],
+          points_earned: Number(earned.rows[0].points),
+        });
+      }
     }
 
-    if (beforeId) {
-      params.push(beforeId);
-      sql += ` AND id < $${params.length} `;
+    // verify the customer belongs to this user
+    const c = await client.query(
+      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
+      [customerId, userId]
+    );
+    if (c.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ ok: false, error: "Customer not found" });
     }
 
-    params.push(limit);
-    sql += ` ORDER BY id DESC LIMIT $${params.length}; `;
+    // create order (store idempotency_key if provided)
+    const order = await client.query(
+      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
+      [userId, customerId, subtotalCents, idemKey]
+    );
 
-    const result = await pool.query(sql, params);
+    // points rule: 1 point per $1 spent
+    const points = Math.floor(subtotalCents / 100);
 
-    const next_before_id =
-      result.rows.length > 0 ? result.rows[result.rows.length - 1].id : null;
+    // ledger entry (earned points)
+    await client.query(
+      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
+      [userId, customerId, order.rows[0].id, points, "earn_from_order"]
+    );
 
-    res.json({
-      ok: true,
-      orders: result.rows,
-      next_before_id,
-    });
+    await client.query("COMMIT");
+    res.json({ ok: true, idempotent_replay: false, order: order.rows[0], points_earned: points });
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+
+    // If we hit unique constraint due to a race, fetch and return the existing order
+    if (idemKey && String(err.message || err).toLowerCase().includes("duplicate")) {
+      try {
+        const existing = await pool.query(
+          "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
+          [userId, idemKey]
+        );
+        if (existing.rows.length > 0) {
+          const earned = await pool.query(
+            "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND order_id=$2",
+            [userId, existing.rows[0].id]
+          );
+          return res.json({
+            ok: true,
+            idempotent_replay: true,
+            order: existing.rows[0],
+            points_earned: Number(earned.rows[0].points),
+          });
+        }
+      } catch {}
+    }
+
     res.status(500).json({ ok: false, error: String(err.message || err) });
+  } finally {
+    client.release();
   }
 });
+
 
 
 app.get("/orders/:id", requireAuth, async (req, res) => {
