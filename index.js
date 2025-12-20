@@ -623,7 +623,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
     // Find or create customer by (user_id, pos_customer_id)
     let cust = await client.query(
       "SELECT * FROM customers WHERE user_id=$1 AND pos_customer_id=$2 LIMIT 1",
-      [userId, posCustomerId]
+      [Number, posCustomerId]
     );
 
     if (cust.rows.length === 0) {
@@ -632,7 +632,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
         [
-          userId,
+          Number,
           posCustomerId,
           String(customer_name || "POS Customer"),
           customer_phone || null,
