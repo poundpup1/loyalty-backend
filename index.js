@@ -694,15 +694,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
 });
 
 
-app.post("/webhooks/debug", (req, res) => {
-  res.json({
-    ok: true,
-    got: {
-      x_webhook_secret: req.get("X-Webhook-Secret") || null,
-      authorization: req.get("Authorization") || null,
-    },
-  });
-});
+
 
 return res.status(401).json({
   ok: false,
