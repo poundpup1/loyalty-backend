@@ -579,44 +579,42 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
 
 app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
   const {
-    
     pos_order_id,
     pos_customer_id,
     customer_name,
     customer_phone,
-    subtotal_cents
+    subtotal_cents,
   } = req.body || {};
 
-const posOrderId = String(pos_order_id || "").trim();
-const posCustomerId = String(pos_customer_id || "").trim();
-
-if (posOrderId.length < 3 || posOrderId.length > 200) {
-  return res.status(400).json({ ok: false, error: "pos_order_id invalid" });
-}
-if (posCustomerId.length < 3 || posCustomerId.length > 200) {
-  return res.status(400).json({ ok: false, error: "pos_customer_id invalid" });
-}
-if (!Number.isInteger(subtotalCents) || subtotalCents <= 0 || subtotalCents > 10_000_000) {
-  return res.status(400).json({ ok: false, error: "subtotal_cents invalid" });
-}
-
-
   const userId = Number(process.env.WEBHOOK_USER_ID);
-if (!userId) {
-  return res.status(500).json({ ok: false, error: "WEBHOOK_USER_ID not configured" });
-}
+  if (!userId) {
+    return res.status(500).json({ ok: false, error: "WEBHOOK_USER_ID not configured" });
+  }
 
+  const posOrderId = String(pos_order_id || "").trim();
+  const posCustomerId = String(pos_customer_id || "").trim();
   const subtotalCents = Number(subtotal_cents);
 
-  if (!pos_order_id || !pos_customer_id || !subtotalCents) {
-  return res.status(400).json({
-    ok: false,
-    error: "pos_order_id, pos_customer_id, subtotal_cents required"
-  });
-}
+  // Required checks (after normalization)
+  if (!posOrderId || !posCustomerId || !subtotalCents) {
+    return res.status(400).json({
+      ok: false,
+      error: "pos_order_id, pos_customer_id, subtotal_cents required",
+    });
+  }
 
+  // Tight validation
+  if (posOrderId.length < 3 || posOrderId.length > 200) {
+    return res.status(400).json({ ok: false, error: "pos_order_id invalid" });
+  }
+  if (posCustomerId.length < 3 || posCustomerId.length > 200) {
+    return res.status(400).json({ ok: false, error: "pos_customer_id invalid" });
+  }
+  if (!Number.isInteger(subtotalCents) || subtotalCents <= 0 || subtotalCents > 10_000_000) {
+    return res.status(400).json({ ok: false, error: "subtotal_cents invalid" });
+  }
 
-  const idemKey = String(pos_order_id);
+  const idemKey = posOrderId;
 
   const client = await pool.connect();
   try {
@@ -625,17 +623,21 @@ if (!userId) {
     // Find or create customer by (user_id, pos_customer_id)
     let cust = await client.query(
       "SELECT * FROM customers WHERE user_id=$1 AND pos_customer_id=$2 LIMIT 1",
-      [userId, String(pos_customer_id)]
+      [userId, posCustomerId]
     );
 
     if (cust.rows.length === 0) {
-      const created = await client.query(
+      cust = await client.query(
         `INSERT INTO customers (user_id, pos_customer_id, name, phone)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [userId, String(pos_customer_id), String(customer_name || "POS Customer"), customer_phone || null]
+        [
+          userId,
+          posCustomerId,
+          String(customer_name || "POS Customer"),
+          customer_phone || null,
+        ]
       );
-      cust = created;
     }
 
     const customerId = cust.rows[0].id;
@@ -648,6 +650,7 @@ if (!userId) {
       "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
       [userId, idemKey]
     );
+
     if (existing.rows.length > 0) {
       await client.query("COMMIT");
       return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
@@ -676,7 +679,7 @@ if (!userId) {
       try {
         const existing = await pool.query(
           "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
-          [Number(req.body?.user_id), String(req.body?.pos_order_id)]
+          [userId, String(req.body?.pos_order_id || "").trim()]
         );
         if (existing.rows.length > 0) {
           return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
@@ -689,6 +692,7 @@ if (!userId) {
     client.release();
   }
 });
+
 
 
 
