@@ -31,6 +31,8 @@ function requireWebhookSecret(req, res, next) {
   next();
 }
 
+app.use(express.json({ limit: "50kb" }));
+
 
 const webhookHits = new Map();
 
