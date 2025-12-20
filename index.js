@@ -567,6 +567,39 @@ app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req,
 
 
 
+app.post("/setup-webhook-locations", async (req, res) => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS webhook_locations (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_webhook_locations_token_hash
+      ON webhook_locations(token_hash);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS ix_webhook_locations_user_id
+      ON webhook_locations(user_id);
+    `);
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
+
+
+
 
 
 const port = process.env.PORT || 3000;
