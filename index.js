@@ -704,6 +704,13 @@ app.post("/webhooks/debug", (req, res) => {
   });
 });
 
+return res.status(401).json({
+  ok: false,
+  error: "Invalid webhook secret",
+  hint: "Check Render WEBHOOK_SECRET and restart deploy",
+});
+
+console.log("WEBHOOK_SECRET set?", Boolean(process.env.WEBHOOK_SECRET));
 
 
 const port = process.env.PORT || 3000;
