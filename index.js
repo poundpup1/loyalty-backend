@@ -195,21 +195,6 @@ app.get("/customers/:id", requireAuth, async (req, res) => {
 });
 
 
-app.get("/customers/:id", async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT * FROM customers WHERE id = $1",
-      [Number(req.params.id)]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "Not found" });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-
-
 
 app.get("/customers/:id/points", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
@@ -405,121 +390,6 @@ app.get("/customers/:id/ledger", requireAuth, async (req, res) => {
 });
 
 
-app.post("/webhooks/orders", requireAuth, async (req, res) => {
-  const userId = Number(req.user.sub);
-
-  const customerId = Number(req.body?.customer_id);
-  const subtotalCents = Number(req.body?.subtotal_cents);
-
-  // Read idempotency key from header OR body
-  const idemKey =
-    (req.get("Idempotency-Key") ? String(req.get("Idempotency-Key")) : null) ||
-    (req.body?.idempotency_key ? String(req.body.idempotency_key) : null);
-
-  if (!customerId || !subtotalCents || subtotalCents <= 0) {
-    return res.status(400).json({
-      ok: false,
-      error: "customer_id and subtotal_cents (> 0) required",
-    });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    // Earn/redeem safety lock per customer
-    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
-
-    // Idempotency replay check
-    if (idemKey) {
-      const existing = await client.query(
-        "SELECT * FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
-        [userId, idemKey]
-      );
-
-      if (existing.rows.length > 0) {
-        const earned = await client.query(
-          "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND order_id=$2",
-          [userId, existing.rows[0].id]
-        );
-
-        await client.query("COMMIT");
-        return res.json({
-          ok: true,
-          idempotent_replay: true,
-          order: existing.rows[0],
-          points_earned: Number(earned.rows[0].points),
-          
-
-        });
-      }
-    }
-
-    // Verify customer ownership
-    const c = await client.query(
-      "SELECT id FROM customers WHERE id = $1 AND user_id = $2",
-      [customerId, userId]
-    );
-    if (c.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Customer not found" });
-    }
-
-    // Create order (store idempotency key)
-    const orderResult = await client.query(
-      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
-      [userId, customerId, subtotalCents, idemKey || null]
-    );
-
-    const points = Math.floor(subtotalCents / 100);
-
-    // Earn ledger entry
-    await client.query(
-      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, customerId, orderResult.rows[0].id, points, "earn_from_order"]
-    );
-
-    await client.query("COMMIT");
-    res.json({
-      ok: true,
-      idempotent_replay: false,
-      order: orderResult.rows[0],
-      points_earned: points,
-      
-    });
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch {}
-
-    // If unique constraint triggers, return the existing order (race-safe)
-    if (idemKey && String(err.message || err).toLowerCase().includes("duplicate")) {
-      try {
-        const existing = await pool.query(
-          "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
-          [userId, idemKey]
-        );
-        if (existing.rows.length > 0) {
-          const earned = await pool.query(
-            "SELECT COALESCE(SUM(points_delta), 0) AS points FROM loyalty_ledger WHERE user_id=$1 AND order_id=$2",
-            [userId, existing.rows[0].id]
-          );
-          return res.json({
-            ok: true,
-            idempotent_replay: true,
-            order: existing.rows[0],
-            points_earned: Number(earned.rows[0].points),
-          });
-        }
-      } catch {}
-    }
-
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  } finally {
-    client.release();
-  }
-});
-
-
-
 
 app.get("/orders/:id", requireAuth, async (req, res) => {
   const userId = Number(req.user.sub);
@@ -577,7 +447,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
+app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req, res) => {
   const {
     pos_order_id,
     pos_customer_id,
@@ -623,7 +493,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
     // Find or create customer by (user_id, pos_customer_id)
     let cust = await client.query(
       "SELECT * FROM customers WHERE user_id=$1 AND pos_customer_id=$2 LIMIT 1",
-      [Number, posCustomerId]
+      [userId, posCustomerId]
     );
 
     if (cust.rows.length === 0) {
@@ -632,7 +502,7 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
         [
-          Number,
+          userId,
           posCustomerId,
           String(customer_name || "POS Customer"),
           customer_phone || null,
@@ -699,5 +569,5 @@ app.post("/webhooks/orders", requireWebhookSecret, async (req, res) => {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log('Server running on port ${port}');
+  console.log(`Server running on port ${port}`);
 });
