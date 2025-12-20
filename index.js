@@ -1,6 +1,7 @@
 const express = require("express");
 const app = express();
 app.use(express.json());
+app.use(express.json({ limit: "50kb" }));
 
 const { Pool } = require("pg");
 const pool = new Pool({
@@ -10,31 +11,72 @@ const pool = new Pool({
 
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-
+const webhookHits = new Map();
 const crypto = require("crypto");
 
-function safeEqual(a, b) {
-  const aa = Buffer.from(a || "");
-  const bb = Buffer.from(b || "");
-  if (aa.length !== bb.length) return false;
-  return crypto.timingSafeEqual(aa, bb);
+function sha256Hex(s) {
+  return crypto.createHash("sha256").update(String(s)).digest("hex");
 }
 
-function requireWebhookSecret(req, res, next) {
-  const provided = req.get("X-Webhook-Secret");
-  const expected = process.env.WEBHOOK_SECRET;
+function generateLocationToken() {
+  // 32 bytes => 64 hex chars (strong)
+  return crypto.randomBytes(32).toString("hex");
+}
 
-  if (!expected) return res.status(500).json({ ok: false, error: "WEBHOOK_SECRET not configured" });
-  if (!provided || !safeEqual(provided, expected)) {
-    return res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+async function requireLocationToken(req, res, next) {
+  const token =
+    req.get("X-Location-Token") ||
+    (req.get("Authorization")?.startsWith("Bearer ")
+      ? req.get("Authorization").slice(7)
+      : null);
+
+  if (!token) return res.status(401).json({ ok: false, error: "Missing location token" });
+
+  const tokenHash = sha256Hex(token);
+
+  try {
+    const result = await pool.query(
+      `SELECT id, user_id, name
+       FROM webhook_locations
+       WHERE token_hash = $1 AND is_active = true
+       LIMIT 1`,
+      [tokenHash]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ ok: false, error: "Invalid location token" });
+    }
+
+    req.webhook = {
+      location_id: result.rows[0].id,
+      user_id: result.rows[0].user_id,
+      location_name: result.rows[0].name,
+    };
+
+    next();
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
   }
-  next();
 }
 
-app.use(express.json({ limit: "50kb" }));
+//function safeEqual(a, b) {
+//  const aa = Buffer.from(a || "");
+//  const bb = Buffer.from(b || "");
+//  if (aa.length !== bb.length) return false;
+ // return crypto.timingSafeEqual(aa, bb);
+//}
 
+//function requireWebhookSecret(req, res, next) {
+  //const provided = req.get("X-Webhook-Secret");
+  //const expected = process.env.WEBHOOK_SECRET;
 
-const webhookHits = new Map();
+//  if (!expected) return res.status(500).json({ ok: false, error: "WEBHOOK_SECRET not configured" });
+//  if (!provided || !safeEqual(provided, expected)) {
+//    return res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+//  }
+//  next();
+//}
+
 
 function rateLimitWebhook(req, res, next) {
   const limit = Number(process.env.WEBHOOK_RATE_LIMIT_PER_MIN || 120);
@@ -59,6 +101,15 @@ function rateLimitWebhook(req, res, next) {
 }
 
 
+
+
+
+
+
+
+
+
+
 app.get("/db-health", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW() as now");
@@ -71,6 +122,13 @@ app.get("/db-health", async (req, res) => {
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
+
+
+
+
+
+
+
 
 
 
@@ -449,7 +507,7 @@ app.get("/orders/:id", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req, res) => {
+app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req, res) => {
   const {
     pos_order_id,
     pos_customer_id,
@@ -458,24 +516,16 @@ app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req,
     subtotal_cents,
   } = req.body || {};
 
-  const userId = Number(process.env.WEBHOOK_USER_ID);
-  if (!userId) {
-    return res.status(500).json({ ok: false, error: "WEBHOOK_USER_ID not configured" });
-  }
+  const userId = Number(req.webhook.user_id);
+  const locationId = Number(req.webhook.location_id);
 
   const posOrderId = String(pos_order_id || "").trim();
   const posCustomerId = String(pos_customer_id || "").trim();
   const subtotalCents = Number(subtotal_cents);
 
-  // Required checks (after normalization)
   if (!posOrderId || !posCustomerId || !subtotalCents) {
-    return res.status(400).json({
-      ok: false,
-      error: "pos_order_id, pos_customer_id, subtotal_cents required",
-    });
+    return res.status(400).json({ ok: false, error: "pos_order_id, pos_customer_id, subtotal_cents required" });
   }
-
-  // Tight validation
   if (posOrderId.length < 3 || posOrderId.length > 200) {
     return res.status(400).json({ ok: false, error: "pos_order_id invalid" });
   }
@@ -503,21 +553,16 @@ app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req,
         `INSERT INTO customers (user_id, pos_customer_id, name, phone)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [
-          userId,
-          posCustomerId,
-          String(customer_name || "POS Customer"),
-          customer_phone || null,
-        ]
+        [userId, posCustomerId, String(customer_name || "POS Customer"), customer_phone || null]
       );
     }
 
     const customerId = cust.rows[0].id;
 
-    // Lock per customer for earn/redeem safety
+    // Lock per customer for safety
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
 
-    // Idempotency: if this pos_order_id already created, return ok (replay)
+    // Idempotency replay
     const existing = await client.query(
       "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
       [userId, idemKey]
@@ -528,7 +573,7 @@ app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req,
       return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
     }
 
-    // Create order with idempotency_key = pos_order_id
+    // Create order
     const orderResult = await client.query(
       "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
       [userId, customerId, subtotalCents, idemKey]
@@ -536,34 +581,22 @@ app.post("/webhooks/orders", rateLimitWebhook, requireWebhookSecret, async (req,
 
     const points = Math.floor(subtotalCents / 100);
 
+    // Ledger entry - include location in reason for traceability
     await client.query(
       "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, customerId, orderResult.rows[0].id, points, "earn_from_webhook_order"]
+      [userId, customerId, orderResult.rows[0].id, points, `earn_from_webhook_order:location_${locationId}`]
     );
 
     await client.query("COMMIT");
     res.json({ ok: true, replay: false, order_id: orderResult.rows[0].id, points_earned: points });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
-
-    // If unique constraint hit due to race, treat as replay
-    if (String(err.message || err).toLowerCase().includes("duplicate")) {
-      try {
-        const existing = await pool.query(
-          "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
-          [userId, String(req.body?.pos_order_id || "").trim()]
-        );
-        if (existing.rows.length > 0) {
-          return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
-        }
-      } catch {}
-    }
-
     res.status(500).json({ ok: false, error: String(err.message || err) });
   } finally {
     client.release();
   }
 });
+
 
 
 
