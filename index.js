@@ -663,15 +663,6 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
 });
 
 
-app.get("/version", (req, res) => {
-  res.json({
-    ok: true,
-    has_locations_route: true,
-    ts: new Date().toISOString(),
-  });
-});
-
-
 
 
 
