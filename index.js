@@ -13,6 +13,9 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const webhookHits = new Map();
 const crypto = require("crypto");
+const idemKey = `loc_${locationId}:${posOrderId}`;
+
+const port = process.env.PORT || 3000;
 
 function sha256Hex(s) {
   return crypto.createHash("sha256").update(String(s)).digest("hex");
@@ -601,7 +604,8 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
     return res.status(400).json({ ok: false, error: "subtotal_cents invalid" });
   }
 
-  const idemKey = posOrderId;
+
+
 
   const client = await pool.connect();
   try {
@@ -627,11 +631,7 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
     // Lock per customer for safety
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
 
-    // Idempotency replay
-    const existing = await client.query(
-      "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
-      [userId, idemKey]
-    );
+
 
     if (existing.rows.length > 0) {
       await client.query("COMMIT");
@@ -671,7 +671,7 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
 
 
 
-const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
