@@ -605,6 +605,8 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
   }
 
 
+// Location-scoped idempotency key (prevents collisions across stores)
+const idemKey = `loc_${locationId}:${posOrderId}`;
 
 
   const client = await pool.connect();
@@ -631,12 +633,20 @@ app.post("/webhooks/orders", rateLimitWebhook, requireLocationToken, async (req,
     // Lock per customer for safety
     await client.query("SELECT pg_advisory_xact_lock($1, $2)", [userId, customerId]);
 
-
+// Idempotency replay check (location-scoped)
+const existing = await client.query(
+  "SELECT * FROM orders WHERE user_id=$1 AND idempotency_key=$2 LIMIT 1",
+  [userId, idemKey]
+);
 
     if (existing.rows.length > 0) {
       await client.query("COMMIT");
       return res.json({ ok: true, replay: true, order_id: existing.rows[0].id });
     }
+
+
+
+
 
     // Create order
     const orderResult = await client.query(
