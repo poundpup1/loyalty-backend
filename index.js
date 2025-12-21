@@ -13,7 +13,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const webhookHits = new Map();
 const crypto = require("crypto");
-const idemKey = `loc_${locationId}:${posOrderId}`;
+//const idemKey = `loc_${locationId}:${posOrderId}`;
 
 const port = process.env.PORT || 3000;
 
