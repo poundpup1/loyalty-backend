@@ -131,6 +131,71 @@ app.get("/health", (req, res) => {
 
 
 
+app.post("/locations", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const name = String(req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ ok: false, error: "name required" });
+
+  const token = generateLocationToken();
+  const tokenHash = sha256Hex(token);
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO webhook_locations (user_id, name, token_hash)
+       VALUES ($1, $2, $3)
+       RETURNING id, user_id, name, is_active, created_at`,
+      [userId, name, tokenHash]
+    );
+
+    // IMPORTANT: only return the raw token once
+    res.json({ ok: true, location: result.rows[0], token });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.get("/locations", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  try {
+    const result = await pool.query(
+      `SELECT id, user_id, name, is_active, created_at
+       FROM webhook_locations
+       WHERE user_id = $1
+       ORDER BY id DESC`,
+      [userId]
+    );
+    res.json({ ok: true, locations: result.rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.post("/locations/:id/disable", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const locationId = Number(req.params.id);
+
+  try {
+    const result = await pool.query(
+      `UPDATE webhook_locations
+       SET is_active = false
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, name, is_active`,
+      [locationId, userId]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ ok: false, error: "Not found" });
+    res.json({ ok: true, location: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
+
+
+
+
+
 
 app.post("/auth/register", async (req, res) => {
   const { email, password } = req.body || {};
