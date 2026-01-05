@@ -680,7 +680,7 @@ const existing = await client.query(
 
     // Create order
     const orderResult = await client.query(
-      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key, location_id) VALUES ($1, $2, $3, $4) RETURNING *",
+      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key, location_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
       [userId, customerId, subtotalCents, idemKey, locationId]
     );
 
