@@ -703,25 +703,6 @@ const existing = await client.query(
 });
 
 
-app.post("/admin/migrate-location-reporting", requireAuth, async (req, res) => {
-  try {
-    // Add columns
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS location_id INTEGER;`);
-    await pool.query(`ALTER TABLE loyalty_ledger ADD COLUMN IF NOT EXISTS location_id INTEGER;`);
-
-    // Helpful indexes
-    await pool.query(`CREATE INDEX IF NOT EXISTS ix_orders_user_location_created ON orders(user_id, location_id, created_at DESC);`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS ix_ledger_user_location_created ON loyalty_ledger(user_id, location_id, created_at DESC);`);
-
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-
-
-
 
 
 
