@@ -726,6 +726,25 @@ app.get("/locations/:id/summary", requireAuth, async (req, res) => {
       [userId, locationId]
     );
 
+    const topCustomers = await pool.query(
+  `SELECT
+     c.id AS customer_id,
+     c.name,
+     c.phone,
+     COUNT(o.id)::int AS orders_count,
+     COALESCE(SUM(o.subtotal_cents), 0)::bigint AS subtotal_cents
+   FROM orders o
+   JOIN customers c
+     ON c.id = o.customer_id
+    AND c.user_id = o.user_id
+   WHERE o.user_id=$1 AND o.location_id=$2
+   GROUP BY c.id, c.name, c.phone
+   ORDER BY subtotal_cents DESC, orders_count DESC, c.id DESC
+   LIMIT 10`,
+  [userId, locationId]
+);
+
+
     const points = await pool.query(
       `SELECT COALESCE(SUM(points_delta), 0)::bigint AS points_delta
        FROM loyalty_ledger
@@ -735,7 +754,7 @@ app.get("/locations/:id/summary", requireAuth, async (req, res) => {
 
     const last7 = await pool.query(
       `SELECT
-         DATE_TRUNC('day', created_at) AS day,
+         DATE_TRUNC('day', created_at AT TIME ZONE 'America/Chicago') AS day,
          COUNT(*)::int AS orders_count,
          COALESCE(SUM(subtotal_cents), 0)::bigint AS subtotal_cents
        FROM orders
@@ -753,6 +772,14 @@ app.get("/locations/:id/summary", requireAuth, async (req, res) => {
         gross_subtotal_cents: Number(totals.rows[0].gross_subtotal_cents),
         points_delta: Number(points.rows[0].points_delta),
       },
+      top_customers: topCustomers.rows.map(r => ({
+  customer_id: r.customer_id,
+  name: r.name,
+  phone: r.phone,
+  orders_count: r.orders_count,
+  subtotal_cents: Number(r.subtotal_cents),
+})),
+
       last_7_days: last7.rows.map(r => ({
         day: r.day,
         orders_count: r.orders_count,
