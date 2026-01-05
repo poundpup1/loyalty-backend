@@ -194,6 +194,36 @@ app.post("/locations/:id/disable", requireAuth, async (req, res) => {
 });
 
 
+app.post("/locations/:id/rotate-token", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const locationId = Number(req.params.id);
+
+  const newToken = crypto.randomBytes(32).toString("hex");
+  const newHash = crypto.createHash("sha256").update(newToken).digest("hex");
+
+  try {
+    const result = await pool.query(
+      `UPDATE webhook_locations
+       SET token_hash = $1
+       WHERE id = $2 AND user_id = $3 AND is_active = true
+       RETURNING id, name, is_active`,
+      [newHash, locationId, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "Location not found or inactive" });
+    }
+
+    // Return the new token ONCE
+    res.json({
+      ok: true,
+      location: result.rows[0],
+      token: newToken,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 
