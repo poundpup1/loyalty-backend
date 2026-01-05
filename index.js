@@ -680,17 +680,19 @@ const existing = await client.query(
 
     // Create order
     const orderResult = await client.query(
-      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key) VALUES ($1, $2, $3, $4) RETURNING *",
-      [userId, customerId, subtotalCents, idemKey]
+      "INSERT INTO orders (user_id, customer_id, subtotal_cents, idempotency_key, location_id) VALUES ($1, $2, $3, $4) RETURNING *",
+      [userId, customerId, subtotalCents, idemKey, locationId]
     );
 
     const points = Math.floor(subtotalCents / 100);
 
     // Ledger entry - include location in reason for traceability
-    await client.query(
-      "INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason) VALUES ($1, $2, $3, $4, $5)",
-      [userId, customerId, orderResult.rows[0].id, points, `earn_from_webhook_order:location_${locationId}`]
-    );
+   await client.query(
+  `INSERT INTO loyalty_ledger (user_id, customer_id, order_id, points_delta, reason, location_id)
+   VALUES ($1, $2, $3, $4, $5, $6)`,
+  [userId, customerId, orderResult.rows[0].id, points, "earn_from_webhook_order", locationId]
+);
+
 
     await client.query("COMMIT");
     res.json({ ok: true, replay: false, order_id: orderResult.rows[0].id, points_earned: points });
@@ -703,6 +705,140 @@ const existing = await client.query(
 });
 
 
+app.get("/locations/:id/summary", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const locationId = Number(req.params.id);
+
+  try {
+    // Ensure location belongs to user
+    const loc = await pool.query(
+      `SELECT id, name, is_active FROM webhook_locations WHERE id=$1 AND user_id=$2 LIMIT 1`,
+      [locationId, userId]
+    );
+    if (loc.rows.length === 0) return res.status(404).json({ ok: false, error: "Location not found" });
+
+    const totals = await pool.query(
+      `SELECT
+         COUNT(*)::int AS orders_count,
+         COALESCE(SUM(subtotal_cents), 0)::bigint AS gross_subtotal_cents
+       FROM orders
+       WHERE user_id=$1 AND location_id=$2`,
+      [userId, locationId]
+    );
+
+    const points = await pool.query(
+      `SELECT COALESCE(SUM(points_delta), 0)::bigint AS points_delta
+       FROM loyalty_ledger
+       WHERE user_id=$1 AND location_id=$2`,
+      [userId, locationId]
+    );
+
+    const last7 = await pool.query(
+      `SELECT
+         DATE_TRUNC('day', created_at) AS day,
+         COUNT(*)::int AS orders_count,
+         COALESCE(SUM(subtotal_cents), 0)::bigint AS subtotal_cents
+       FROM orders
+       WHERE user_id=$1 AND location_id=$2 AND created_at >= NOW() - INTERVAL '7 days'
+       GROUP BY 1
+       ORDER BY 1 DESC`,
+      [userId, locationId]
+    );
+
+    res.json({
+      ok: true,
+      location: loc.rows[0],
+      totals: {
+        orders_count: totals.rows[0].orders_count,
+        gross_subtotal_cents: Number(totals.rows[0].gross_subtotal_cents),
+        points_delta: Number(points.rows[0].points_delta),
+      },
+      last_7_days: last7.rows.map(r => ({
+        day: r.day,
+        orders_count: r.orders_count,
+        subtotal_cents: Number(r.subtotal_cents),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
+
+app.get("/locations/:id/orders", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const locationId = Number(req.params.id);
+
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
+
+  try {
+    const params = [userId, locationId];
+    let sql = `
+      SELECT id, customer_id, subtotal_cents, created_at, idempotency_key
+      FROM orders
+      WHERE user_id=$1 AND location_id=$2
+    `;
+
+    if (beforeId) {
+      params.push(beforeId);
+      sql += ` AND id < $3 `;
+    }
+
+    params.push(limit);
+    sql += ` ORDER BY id DESC LIMIT $${params.length};`;
+
+    const result = await pool.query(sql, params);
+
+    res.json({
+      ok: true,
+      location_id: locationId,
+      orders: result.rows,
+      next_before_id: result.rows.length ? result.rows[result.rows.length - 1].id : null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+
+
+app.get("/locations/:id/ledger", requireAuth, async (req, res) => {
+  const userId = Number(req.user.sub);
+  const locationId = Number(req.params.id);
+
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const beforeId = req.query.before_id ? Number(req.query.before_id) : null;
+
+  try {
+    const params = [userId, locationId];
+    let sql = `
+      SELECT id, customer_id, order_id, points_delta, reason, created_at
+      FROM loyalty_ledger
+      WHERE user_id=$1 AND location_id=$2
+    `;
+
+    if (beforeId) {
+      params.push(beforeId);
+      sql += ` AND id < $3 `;
+    }
+
+    params.push(limit);
+    sql += ` ORDER BY id DESC LIMIT $${params.length};`;
+
+    const result = await pool.query(sql, params);
+
+    res.json({
+      ok: true,
+      location_id: locationId,
+      ledger: result.rows,
+      next_before_id: result.rows.length ? result.rows[result.rows.length - 1].id : null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 
 
